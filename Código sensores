@@ -1,0 +1,507 @@
+#include "FirebaseESP32.h" //libreria para firebase conectado a esp32 
+
+#include <WiFi.h> //libreria para conectar esp32 usando wifi 
+
+#include <OneWire.h> //libreria para el sensor de temperatura corporal 
+
+#include <DallasTemperature.h> //libreria para sensor corporal 
+
+#include <Wire.h> //libreria bmp sensor 
+
+#include <Adafruit_Sensor.h> //libreria bmp sensor 
+
+#include <Adafruit_BME280.h> //libreria bmp sensor 
+
+#include <SPI.h> 
+
+#include "MAX30105.h" 
+
+#include "spo2_algorithm.h" 
+
+ 
+
+//#define ADC_VREF_mV 3300.0 //en miliVoltios 
+
+//#define ADC_RESOLUTION 4096.0  
+
+//#define PIN_LM35 36 //pin GIOP36 (ADC0) conectado a LM35  
+
+ 
+
+#define FIREBASE_HOST "monitor1-df8fd-default-rtdb.firebaseio.com" 
+
+#define WIFI_SSID "XTRIM_GL" 
+
+#define WIFI_PASSWORD "Haruhi_2023" 
+
+#define FIREBASE_Authorization_key "YAKgv1IM544BrzkBKJWv3o1ybRv8SfzBFLyj3pS3" 
+
+ 
+
+//unsigned long delayTime; 
+
+ 
+
+OneWire ourWire(5); //Se establece el pin del ESP32 para la lectura del sensor 
+
+DallasTemperature DS18B20(&ourWire); //Declaracion de una variable para el sensor 
+
+#define REPORTING_PERIOD_MS     1000 
+
+uint32_t tsLastReport = 0; 
+
+ 
+
+MAX30105 particleSensor; 
+
+#define MAX_BRIGHTNESS 255  
+
+ 
+
+uint32_t irBuffer[100]; //infrared LED sensor data 
+
+uint32_t redBuffer[100];  //red LED sensor data 
+
+ 
+
+int32_t bufferLength; //data length 
+
+int32_t spo2; //SPO2 value 
+
+int8_t validSPO2; //indicator to show if the SPO2 calculation is valid 
+
+int32_t heartRate; //heart rate value 
+
+int8_t validHeartRate; //indicator to show if the heart rate calculation is valid 
+
+ 
+
+byte pulseLED = 11; //Must be on PWM pin 
+
+byte readLED = 13; //Blinks with each data read*/ 
+
+ 
+
+const byte RATE_SIZE = 4; //Increase this for more averaging. 4 is good. 
+
+byte rates[RATE_SIZE]; //Array of heart rates 
+
+byte rateSpot = 0; 
+
+long lastBeat = 0; //Time at which the last beat occurred 
+
+ 
+
+float beatsPerMinute; 
+
+int beatAvg; 
+
+ 
+
+#define BME_SCK 13 
+
+#define BME_MISO 12 
+
+#define BME_MOSI 11 
+
+#define BME_CS 10 
+
+ 
+
+#define SEALEVELPRESSURE_HPA (1013.25) 
+
+ 
+
+Adafruit_BME280 bme; 
+
+ 
+
+FirebaseData firebaseData; 
+
+FirebaseJson json; 
+
+ 
+
+int changer= 2; 
+
+ 
+
+void setup(){ 
+
+  Serial.begin(115200); //inicio del monitor serie a 115200 baudios 
+
+  DS18B20.begin(); //inicia el sensor 
+
+  bme.begin(); 
+
+  Serial2.begin(115200); //comunicacion serial entre esp32 
+
+  particleSensor.begin(Wire, I2C_SPEED_FAST); 
+
+  pinMode(pulseLED, OUTPUT); 
+
+  pinMode(readLED, OUTPUT); 
+
+/* 
+
+  if (!bme.begin()){ 
+
+    Serial.println(F("Could not find a valid BMP280 sensor!")); 
+
+    while(1); 
+
+  }*/ 
+
+/* 
+
+  // Initialize sensor 
+
+  if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) //Use default I2C port, 400kHz speed 
+
+  { 
+
+    Serial.println("MAX30102 was not found. Please check wiring/power. "); 
+
+    while (1); 
+
+  }*/ 
+
+ 
+
+   
+
+  byte ledBrightness = 60; //Options: 0=Off to 255=50mA 
+
+  byte sampleAverage = 4; //Options: 1, 2, 4, 8, 16, 32 
+
+  byte ledMode = 2; //Options: 1 = Red only, 2 = Red + IR, 3 = Red + IR + Green 
+
+  byte sampleRate = 100; //Options: 50, 100, 200, 400, 800, 1000, 1600, 3200 
+
+  int pulseWidth = 411; //Options: 69, 118, 215, 411 
+
+  int adcRange = 4096; //Options: 2048, 4096, 8192, 16384 
+
+ 
+
+  particleSensor.setup(ledBrightness, sampleAverage, ledMode, sampleRate, pulseWidth, adcRange); //Configure sensor with these settings 
+
+ 
+
+  WiFi.begin(WIFI_SSID,WIFI_PASSWORD); 
+
+  Serial.print("Connecting..."); 
+
+  while(WiFi.status()!=WL_CONNECTED){ 
+
+    Serial.print("."); 
+
+    delay(300); 
+
+  } 
+
+  Serial.println(); 
+
+  Serial.print("IP Address: "); 
+
+  Serial.println(WiFi.localIP()); 
+
+  Serial.println(); 
+
+  Firebase.begin(FIREBASE_HOST,FIREBASE_Authorization_key); 
+
+} 
+
+ 
+
+void loop(){ 
+
+  DS18B20.requestTemperatures(); //Se envia el comando para leer la temperatura 
+
+  long irValue = particleSensor.getIR(); 
+
+ 
+
+  bufferLength = 100; //buffer length of 100 stores 4 seconds of samples running at 25sps 
+
+  
+
+  //read the first 100 samples, and determine the signal range 
+
+  for (byte i = 0 ; i < bufferLength ; i++) 
+
+  { 
+
+    while (particleSensor.available() == false) //do we have new data? 
+
+      particleSensor.check(); //Check the sensor for new data 
+
+  
+
+      redBuffer[i] = particleSensor.getRed(); 
+
+      irBuffer[i] = particleSensor.getIR(); 
+
+      particleSensor.nextSample(); //We're finished with this sample so move to next sample 
+
+  
+
+      Serial.print(F("red=")); 
+
+      Serial.print(redBuffer[i], DEC); 
+
+      Serial.print(F(", ir=")); 
+
+      Serial.println(irBuffer[i], DEC); 
+
+  } 
+
+  
+
+  //calculate heart rate and SpO2 after first 100 samples (first 4 seconds of samples) 
+
+  maxim_heart_rate_and_oxygen_saturation(irBuffer, bufferLength, redBuffer, &spo2, &validSPO2, &heartRate, &validHeartRate); 
+
+  
+
+  //Continuously taking samples from MAX30102.  Heart rate and SpO2 are calculated every 1 second 
+
+  while (1) 
+
+  { 
+
+    //dumping the first 25 sets of samples in the memory and shift the last 75 sets of samples to the top 
+
+    for (byte i = 25; i < 100; i++) 
+
+    { 
+
+      redBuffer[i - 25] = redBuffer[i]; 
+
+      irBuffer[i - 25] = irBuffer[i]; 
+
+    } 
+
+  
+
+    //take 25 sets of samples before calculating the heart rate. 
+
+    for (byte i = 75; i < 100; i++) 
+
+    { 
+
+      while (particleSensor.available() == false) //do we have new data? 
+
+        particleSensor.check(); //Check the sensor for new data 
+
+  
+
+      digitalWrite(readLED, !digitalRead(readLED)); //Blink onboard LED with every data read 
+
+  
+
+      redBuffer[i] = particleSensor.getRed(); 
+
+      irBuffer[i] = particleSensor.getIR(); 
+
+      particleSensor.nextSample(); //We're finished with this sample so move to next sample 
+
+  
+
+      //send samples and calculation result to terminal program through UART 
+
+      Serial.print(F("red=")); 
+
+      Serial.print(redBuffer[i], DEC); 
+
+      Serial.print(F(", ir=")); 
+
+      Serial.print(irBuffer[i], DEC); 
+
+  
+
+      Serial.print(F(", HR=")); 
+
+      Serial.print(heartRate, DEC); 
+
+  
+
+      Serial.print(F(", HRvalid=")); 
+
+      Serial.print(validHeartRate, DEC); 
+
+  
+
+      Serial.print(F(", SPO2=")); 
+
+      Serial.print(spo2, DEC); 
+
+  
+
+      Serial.print(F(", SPO2Valid=")); 
+
+      Serial.println(validSPO2, DEC); 
+
+    } 
+
+  
+
+    //After gathering 25 new samples recalculate HR and SP02 
+
+    maxim_heart_rate_and_oxygen_saturation(irBuffer, bufferLength, redBuffer, &spo2, &validSPO2, &heartRate, &validHeartRate); 
+
+  } 
+
+  float tempC= DS18B20.getTempCByIndex(0);//Se obtiene la temperatura en grados centigrados 
+
+   
+
+  float temp=bme.readTemperature(); 
+
+  float pressure=bme.readPressure()/ 100.0F; 
+
+  float hum=bme.readHumidity(); 
+
+  float alt=bme.readAltitude(SEALEVELPRESSURE_HPA); 
+
+   
+
+  float SpO2 = spo2; 
+
+  float BPM = heartRate;  
+
+  /* 
+
+  int adcVal= analogRead(PIN_LM35); //leer el valor adc desde la temperatura del sensor 
+
+  float miliVolt= adcVal * (ADC_VREF_mV / ADC_RESOLUTION); //convierte el voltaje en temperatura 
+
+  float tempC = miliVolt / 10; // convierte el voltaje en temperatura en centigrados 
+
+  */ 
+
+  if(isnan(tempC)){ 
+
+    Serial.println(F("Failed to read DS18B20 sensor!")); 
+
+    return; 
+
+  } 
+
+/* 
+
+  if(isnan(temp)||isnan(pressure)||isnan(hum)|| isnan(alt)){ 
+
+    Serial.println(F("Failed to read BME280 sensor!")); 
+
+  } 
+
+*/ 
+
+   
+
+  /*if(isnan(tempC)){ 
+
+    Serial.println(F("Failed to read LM35 sensor!")); 
+
+    return; 
+
+  }*/ 
+
+   
+
+ 
+
+  Serial.print("Temperatura Corporal= "); 
+
+  Serial.print(tempC); 
+
+  Serial.println(" °C"); 
+
+ 
+
+  Serial.print("Temperatura= "); 
+
+  Serial.print(temp); 
+
+  Serial.println(" °C"); 
+
+ 
+
+  Serial.print("Presión= "); 
+
+  Serial.print(pressure); 
+
+  Serial.println(" hPa"); 
+
+ 
+
+  Serial.print("Humedad= "); 
+
+  Serial.print(hum); 
+
+  Serial.println(" %"); 
+
+   
+
+  Serial.print("Approx. Altitude = "); 
+
+  Serial.print(alt); 
+
+  Serial.println(" m"); 
+
+ 
+
+  Serial.print("SpO2: "); 
+
+  Serial.print(SpO2); 
+
+  Serial.println("%"); 
+
+ 
+
+  Serial.print("BPM: "); 
+
+  Serial.print(BPM); 
+
+  Serial.println(""); 
+
+ 
+
+  Firebase.setFloat(firebaseData, "/ESP32/tempC",tempC); 
+
+  Firebase.setFloat(firebaseData, "/ESP32/temp",temp); 
+
+  Firebase.setFloat(firebaseData, "/ESP32/pressure",pressure); 
+
+  Firebase.setFloat(firebaseData, "/ESP32/hum",hum); 
+
+  Firebase.setFloat(firebaseData, "/ESP32/alt",alt); 
+
+  Firebase.setFloat(firebaseData, "/ESP32/oxig",SpO2); 
+
+  Firebase.setFloat(firebaseData, "/ESP32/pulse",BPM); 
+
+  Firebase.getString(firebaseData, "/ESP32_APP/led"); 
+
+  if (firebaseData.stringData().equals("1")){ 
+
+    Serial.print(firebaseData.stringData()); //ver el valor que esta imprimiendo 
+
+    Serial2.println("lampOn"); 
+
+  } 
+
+  else if (firebaseData.stringData().equals("0")){ 
+
+    Serial.print(firebaseData.stringData()); //ver el valor que esta imprimiendo 
+
+    Serial2.println("lampOff"); 
+
+  } 
+
+  
+
+  delay(1000); 
+
+} 
