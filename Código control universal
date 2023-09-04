@@ -1,0 +1,269 @@
+#include <Arduino.h> 
+
+#include "PinDefinitionsAndMore.h"  //Configuración y definición de pines 
+
+#include <IRremote.hpp> 
+
+#include "BluetoothSerial.h" 
+
+#include <cstring> 
+
+ 
+
+//definir variables control físico 
+
+#define IR_Button1 0x20DF8877 
+
+#define IR_Button2 0x20DF48B7 
+
+#define IR_LampButton 0x20DF9E61 
+
+ 
+
+//definir variable relay 
+
+int RelayLamp = 23;  //D23 
+
+ 
+
+//Variable para leer el estado del pin Relay 
+
+bool toggleState = HIGH; 
+
+ 
+
+//Inicializar el receptor 
+
+IRrecv irrecv(IR_RECEIVE_PIN); 
+
+decode_results results; 
+
+ 
+
+//Inicializar la configuración Bluetooh 
+
+#if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED) 
+
+#error Bluetooth is not enabled! Please run `make menuconfig` to and enable it 
+
+#endif 
+
+ 
+
+BluetoothSerial SerialBT; 
+
+ 
+
+void setup() { 
+
+ 
+
+  irrecv.enableIRIn(); 
+
+ 
+
+  pinMode(RelayLamp, OUTPUT); 
+
+ 
+
+  Serial.begin(115200); 
+
+  SerialBT.begin("ESP32test");  //Bluetooth device name 
+
+  Serial.println("The device started, now you can pair it with bluetooth!"); 
+
+  IrSender.begin();  // Inicializamos el emisor infrarrojo 
+
+  Serial.print(F("Listo para enviar señales IR en el pin")); 
+
+  Serial.println(IR_SEND_PIN);  //Muestra el número del pin configurado en PinDefinitionsAndMore.h 
+
+ 
+
+  digitalWrite(RelayLamp, HIGH); 
+
+} 
+
+ 
+
+void loop() { 
+
+  if (Serial.available()) { 
+
+    SerialBT.write(Serial.read());  //Serial PC 
+
+  } 
+
+  if (SerialBT.available()) { 
+
+ 
+
+    DecodificarComando(); 
+
+  } 
+
+  ir_remote(); 
+
+} 
+
+ 
+
+void DecodificarComando() { 
+
+ 
+
+  String Mensaje = SerialBT.readStringUntil('\n'); 
+
+ 
+
+  int PosicionPleca = Mensaje.indexOf(' '); 
+
+  int PosicionSaltoLinea = Mensaje.length(); 
+
+  String Dato = Mensaje.substring(0, PosicionPleca); 
+
+ 
+
+  // String Dato = Mensaje; 
+
+  //Remoto TV BOX 
+
+  if (Dato.equals("On")) { 
+
+    IrSender.sendNEC(0x202B24D, 32);  //encender tvBox 
+
+  } else if (Dato.equals("Off")) { 
+
+    IrSender.sendNEC(0x202B24D, 32);  //apagar tvBox 
+
+  } else if (Dato.equals("Up")) { 
+
+    IrSender.sendNEC(0x202D02F, 32);  //arriba tvBox 
+
+  } else if (Dato.equals("Down")) { 
+
+    IrSender.sendNEC(0x202708F, 32);  //abajo tvBox 
+
+  } else if (Dato.equals("Left")) { 
+
+    IrSender.sendNEC(0x20208F7, 32);  //izquierda tvBox 
+
+  } else if (Dato.equals("Right")) { 
+
+    IrSender.sendNEC(0x2028877, 32);  //izquierda tvBox 
+
+  } else if (Dato.equals("Ok")) { 
+
+    IrSender.sendNEC(0x202B04F, 32);  //izquierda tvBox 
+
+  } else if (Dato.equals("Home")) { 
+
+    IrSender.sendNEC(0x20258A7, 32);  //Home tvBox 
+
+  } else if (Dato.equals("Vol+")) { 
+
+    IrSender.sendNEC(0x20218E7, 32);  //Vol+ tvBox 
+
+  } else if (Dato.equals("Vol-")) { 
+
+    IrSender.sendNEC(0x202E817, 32);  //VOL- tvBox 
+
+  } else if (Dato.equals("Back")) { 
+
+    IrSender.sendNEC(0x20242BD, 32);  //izquierda tvBox 
+
+  } 
+
+  //Remoto RadioBT 
+
+  if (Dato.equals("Onr")) { 
+
+    IrSender.sendNEC(0xFFA25D, 32);  //encender/apagar radio 
+
+  } else if (Dato.equals("Mute")) { 
+
+    IrSender.sendNEC(0xFFE21D, 32);  //Mutear radio 
+
+  } else if (Dato.equals("Volr+")) { 
+
+    IrSender.sendNEC(0xFF9867, 32);  //Vol+ radio 
+
+  } else if (Dato.equals("Volr-")) { 
+
+    IrSender.sendNEC(0xFF6897, 32);  //Vol- 
+
+  } else if (Dato.equals("Mode")) { 
+
+    IrSender.sendNEC(0xFF22DD, 32);  //Cambiar modo 
+
+  } else if (Dato.equals("lampOn")) { 
+
+    digitalWrite(RelayLamp, LOW); 
+
+    Serial.println("Lampara encendida"); 
+
+    toggleState = !toggleState; 
+
+  } else if (Dato.equals("lampOff")) { 
+
+    digitalWrite(RelayLamp, HIGH); 
+
+    toggleState = HIGH; 
+
+  } 
+
+ 
+
+  Serial.println(Dato); 
+
+} 
+
+ 
+
+void ir_remote() { 
+
+  if (irrecv.decode(&results)) { 
+
+    switch (results.value) { 
+
+      case IR_Button1: 
+
+        IrSender.sendNEC(0x202B24D, 32); 
+
+        Serial.println("Box"); 
+
+        delay(50); 
+
+        break; 
+
+      case IR_Button2: 
+
+        IrSender.sendNEC(0xFFA25D, 32); 
+
+        Serial.println("Radio"); 
+
+        delay(50); 
+
+        break; 
+
+      case IR_LampButton: 
+
+        //Encender/apagar relay 
+
+        toggleState = !toggleState; 
+
+        digitalWrite(RelayLamp, toggleState); 
+
+        delay(50); 
+
+        break; 
+
+      default: break; 
+
+    } 
+
+    irrecv.resume(); 
+
+  } 
+
+} 
